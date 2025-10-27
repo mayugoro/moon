@@ -126,20 +126,36 @@ const formatPreview = (item, index) => {
     return message;
 };
 
-const createPreviewKeyboard = (itemIndex) => {
+const createPreviewKeyboard = (itemIndex, videoUrl = null) => {
+    const keyboard = [];
+    
+    // First row: Tonton and Download
+    const firstRow = [];
+    
+    if (videoUrl) {
+        firstRow.push({
+            text: '📺 TONTON',
+            url: videoUrl
+        });
+    }
+    
+    firstRow.push({
+        text: '⬇️ DOWNLOAD',
+        callback_data: `download_${itemIndex}`
+    });
+    
+    keyboard.push(firstRow);
+    
+    // Second row: Kembali
+    keyboard.push([
+        {
+            text: '🔙 KEMBALI',
+            callback_data: `back_to_list`
+        }
+    ]);
+    
     return {
-        inline_keyboard: [
-            [
-                {
-                    text: '⬇️ Download',
-                    callback_data: `download_${itemIndex}`
-                },
-                {
-                    text: '❌ Batal',
-                    callback_data: `cancel_preview`
-                }
-            ]
-        ]
+        inline_keyboard: keyboard
     };
 };
 

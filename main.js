@@ -86,7 +86,7 @@ class MonsNodeBot {
         console.log(`🖱️ Callback from ${query.from.first_name}: ${data}`);
 
         const session = this.userSessions.get(userId);
-        if (!session && !data.startsWith('cancel_')) {
+        if (!session && !data.startsWith('cancel_') && !data.startsWith('back_')) {
             await this.bot.answerCallbackQuery(query.id, { text: 'Session expired' });
             return;
         }
@@ -97,6 +97,20 @@ class MonsNodeBot {
         } else if (data.startsWith('download_')) {
             const index = parseInt(data.split('_')[1]);
             await this.handleDownloadConfirm(chatId, userId, index, query.id);
+        } else if (data.startsWith('back_to_list')) {
+            await this.bot.answerCallbackQuery(query.id, { text: 'Kembali ke list' });
+            await this.bot.deleteMessage(chatId, query.message.message_id);
+            
+            // Show list again
+            if (session) {
+                const page = session.page || 0;
+                const listMessage = formatSearchList(session.results, session.query, page);
+                const keyboard = createInlineKeyboard(session.results, page);
+                
+                await this.bot.sendMessage(chatId, listMessage, {
+                    reply_markup: keyboard
+                });
+            }
         } else if (data.startsWith('cancel_preview')) {
             await this.bot.answerCallbackQuery(query.id, { text: 'Dibatalkan' });
             await this.bot.deleteMessage(chatId, query.message.message_id);
@@ -185,9 +199,23 @@ class MonsNodeBot {
 
         await this.bot.answerCallbackQuery(queryId, { text: 'Menampilkan preview...' });
 
+        // Get actual video URL for streaming
+        let videoUrl = selectedItem.url;
+        if (videoUrl && videoUrl.includes('twjn.php')) {
+            const { getActualVideoUrl } = require('./handle/search');
+            const actualUrl = await getActualVideoUrl(videoUrl);
+            if (actualUrl) {
+                videoUrl = actualUrl;
+            }
+        }
+
         // Format preview message
         const previewMessage = formatPreview(selectedItem, index);
-        const previewKeyboard = createPreviewKeyboard(index);
+        const previewKeyboard = createPreviewKeyboard(index, videoUrl);
+
+        // Store video URL in session for download
+        session.selectedIndex = index;
+        session.selectedVideoUrl = videoUrl;
 
         // Send preview with thumbnail if available
         if (selectedItem.thumbnail) {
