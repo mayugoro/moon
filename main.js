@@ -94,6 +94,19 @@ class MonsNodeBot {
         if (data.startsWith('select_')) {
             const index = parseInt(data.split('_')[1]);
             await this.showPreview(chatId, userId, index, query.id, query.message.message_id);
+        } else if (data.startsWith('watch_disabled_')) {
+            await this.bot.answerCallbackQuery(query.id, { 
+                text: '⚠️ Saldo tidak cukup atau video tidak tersedia', 
+                show_alert: true 
+            });
+        } else if (data.startsWith('watch_')) {
+            const index = parseInt(data.split('_')[1]);
+            await this.handleWatchConfirm(chatId, userId, index, query.id);
+        } else if (data === 'confirm_watch') {
+            await this.handleWatchOpen(chatId, userId, query.id, query.message.message_id);
+        } else if (data === 'cancel_watch') {
+            await this.bot.answerCallbackQuery(query.id, { text: 'Dibatalkan' });
+            await this.bot.deleteMessage(chatId, query.message.message_id);
         } else if (data.startsWith('download_')) {
             const index = parseInt(data.split('_')[1]);
             await this.handleDownloadConfirm(chatId, userId, index, query.id);
@@ -229,7 +242,7 @@ class MonsNodeBot {
             }
         }
 
-        // Check and deduct balance for TONTON feature
+        // Check balance but DON'T deduct yet
         const costWatch = parseInt(process.env.COST_WATCH) || 500;
         const user = await db.getUser(userId);
         
@@ -242,22 +255,17 @@ class MonsNodeBot {
             
             if (user.saldo < costWatch) {
                 previewMessage += `\n⚠️ Saldo tidak cukup untuk Tonton`;
-                // Remove videoUrl so button becomes callback
+                // Remove videoUrl so button becomes disabled
                 videoUrl = null;
-            } else {
-                // Deduct balance for TONTON (will be charged when URL is clicked)
-                await db.deductBalance(userId, costWatch);
-                const newBalance = user.saldo - costWatch;
-                previewMessage += `\n\n✅ Saldo ${costWatch} akan dipotong jika Tonton`;
-                console.log(`💰 Pre-authorized ${costWatch} for watch, user ${userId}`);
             }
         }
 
         const previewKeyboard = createPreviewKeyboard(index, videoUrl);
 
-        // Store video URL in session for download
+        // Store video URL and cost in session (will deduct when URL clicked)
         session.selectedIndex = index;
         session.selectedVideoUrl = videoUrl;
+        session.watchCost = costWatch;
 
         // Send preview with thumbnail if available
         if (selectedItem.thumbnail) {
@@ -277,6 +285,100 @@ class MonsNodeBot {
                 reply_markup: previewKeyboard
             });
         }
+    }
+
+    async handleWatchConfirm(chatId, userId, index, queryId) {
+        const session = this.userSessions.get(userId);
+        if (!session || !session.selectedVideoUrl) {
+            await this.bot.answerCallbackQuery(queryId, { 
+                text: '❌ Video tidak tersedia', 
+                show_alert: true 
+            });
+            return;
+        }
+
+        const costWatch = session.watchCost || 500;
+        const user = await db.getUser(userId);
+
+        if (!user || user.saldo < costWatch) {
+            await this.bot.answerCallbackQuery(queryId, { 
+                text: '❌ Saldo tidak cukup!', 
+                show_alert: true 
+            });
+            return;
+        }
+
+        await this.bot.answerCallbackQuery(queryId, { text: 'Memproses...' });
+
+        // Show confirmation
+        const confirmMessage = `📺 *KONFIRMASI TONTON*\n\n` +
+            `💰 Biaya: ${costWatch}\n` +
+            `💵 Saldo Anda: ${user.saldo}\n` +
+            `💳 Sisa Setelah: ${user.saldo - costWatch}\n\n` +
+            `⚠️ Saldo akan dipotong saat Anda klik tombol BUKA di bawah ini.`;
+
+        const confirmKeyboard = {
+            inline_keyboard: [
+                [
+                    { text: '✅ BUKA', callback_data: 'confirm_watch' },
+                    { text: '❌ BATAL', callback_data: 'cancel_watch' }
+                ]
+            ]
+        };
+
+        await this.bot.sendMessage(chatId, confirmMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: confirmKeyboard
+        });
+    }
+
+    async handleWatchOpen(chatId, userId, queryId, messageId) {
+        const session = this.userSessions.get(userId);
+        if (!session || !session.selectedVideoUrl) {
+            await this.bot.answerCallbackQuery(queryId, { 
+                text: '❌ Video tidak tersedia', 
+                show_alert: true 
+            });
+            return;
+        }
+
+        const costWatch = session.watchCost || 500;
+        const videoUrl = session.selectedVideoUrl;
+
+        // Deduct balance NOW
+        const deductResult = await db.deductBalance(userId, costWatch);
+        
+        if (!deductResult.success) {
+            await this.bot.answerCallbackQuery(queryId, { 
+                text: '❌ Gagal memotong saldo!', 
+                show_alert: true 
+            });
+            return;
+        }
+
+        console.log(`💰 Deducted ${costWatch} for watch, user ${userId}, new balance: ${deductResult.newBalance}`);
+
+        await this.bot.answerCallbackQuery(queryId, { text: '✅ Saldo dipotong, membuka link...' });
+
+        // Delete confirmation message
+        await this.bot.deleteMessage(chatId, messageId);
+
+        // Send video URL with open button
+        const openMessage = `✅ *LINK SIAP DIBUKA*\n\n` +
+            `💰 Saldo terpotong: ${costWatch}\n` +
+            `💵 Sisa saldo: ${deductResult.newBalance}\n\n` +
+            `Klik tombol di bawah untuk menonton:`;
+
+        const urlKeyboard = {
+            inline_keyboard: [
+                [{ text: '🎬 BUKA VIDEO', url: videoUrl }]
+            ]
+        };
+
+        await this.bot.sendMessage(chatId, openMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: urlKeyboard
+        });
     }
 
     async handleWatch(chatId, userId, index, queryId) {
