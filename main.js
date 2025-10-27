@@ -76,11 +76,20 @@ class MonsNodeBot {
                 if (result.sendFile && result.downloadResult && result.downloadResult.filepath) {
                     try {
                         // Send "downloading" status
-                        await this.bot.sendMessage(chatId, '⏳ Mengunduh file...');
+                        if (result.message) {
+                            await this.bot.sendMessage(chatId, result.message);
+                        }
+                        
+                        // Clean title for caption
+                        let cleanTitle = result.selectedItem.title || 'Video';
+                        cleanTitle = cleanTitle.split('http')[0].split('#')[0].trim();
+                        if (cleanTitle.length > 100) {
+                            cleanTitle = cleanTitle.substring(0, 100) + '...';
+                        }
                         
                         // Send file
                         await this.bot.sendVideo(chatId, result.downloadResult.filepath, {
-                            caption: `📹 ${result.selectedItem.title}\n👤 ${result.selectedItem.username}\n📦 ${result.downloadResult.size}`
+                            caption: `📹 ${cleanTitle}\n👤 ${result.selectedItem.username || 'Unknown'}\n📦 ${result.downloadResult.size}`
                         });
                         
                         console.log(`✅ File sent to user ${msg.from.id}`);
@@ -227,9 +236,16 @@ class MonsNodeBot {
 
         if (downloadResult.success && downloadResult.needSendFile) {
             // Return result with file to send
+            // Clean title for display
+            let cleanTitle = selectedItem.title || 'Video';
+            cleanTitle = cleanTitle.split('http')[0].split('#')[0].trim();
+            if (cleanTitle.length > 50) {
+                cleanTitle = cleanTitle.substring(0, 50) + '...';
+            }
+            
             return {
                 success: true,
-                message: `📥 Mengirim: ${selectedItem.title}`,
+                message: `⏳ Mengunduh: ${cleanTitle}`,
                 selectedItem: selectedItem,
                 downloadResult: downloadResult,
                 sendFile: true
@@ -240,21 +256,30 @@ class MonsNodeBot {
     }
 
     formatSearchList(results, query) {
-        let message = `🔍 Hasil Pencarian: "${query}"\n`;
-        message += `Ditemukan ${results.length} hasil\n\n`;
+        let message = `🔍 Hasil: "${query}"\n`;
+        message += `📊 ${results.length} video ditemukan\n\n`;
 
         results.forEach((item, index) => {
-            message += `${index + 1}. ${item.title || item.filename || 'No Title'}\n`;
-            if (item.description) {
-                message += `   ${item.description.substring(0, 50)}...\n`;
+            // Clean title - remove hashtags and URLs
+            let cleanTitle = item.title || 'Video';
+            cleanTitle = cleanTitle.split('http')[0]; // Remove URLs
+            cleanTitle = cleanTitle.split('#')[0]; // Remove hashtags
+            cleanTitle = cleanTitle.trim();
+            
+            // Limit title length
+            if (cleanTitle.length > 60) {
+                cleanTitle = cleanTitle.substring(0, 60) + '...';
             }
-            if (item.category) {
-                message += `   📁 ${item.category}\n`;
+            
+            message += `${index + 1}. ${cleanTitle}\n`;
+            
+            // Show username if available
+            if (item.username) {
+                message += `   👤 ${item.username}\n`;
             }
-            message += '\n';
         });
 
-        message += `\n💡 Ketik nomor (1-${results.length}) untuk melihat preview`;
+        message += `\n💡 Ketik nomor untuk download`;
 
         return message;
     }
