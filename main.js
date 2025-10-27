@@ -98,19 +98,8 @@ class MonsNodeBot {
             const index = parseInt(data.split('_')[1]);
             await this.handleDownloadConfirm(chatId, userId, index, query.id);
         } else if (data.startsWith('back_to_list')) {
-            await this.bot.answerCallbackQuery(query.id, { text: 'Kembali ke list' });
+            await this.bot.answerCallbackQuery(query.id, { text: 'Kembali' });
             await this.bot.deleteMessage(chatId, query.message.message_id);
-            
-            // Show list again
-            if (session) {
-                const page = session.page || 0;
-                const listMessage = formatSearchList(session.results, session.query, page);
-                const keyboard = createInlineKeyboard(session.results, page);
-                
-                await this.bot.sendMessage(chatId, listMessage, {
-                    reply_markup: keyboard
-                });
-            }
         } else if (data.startsWith('cancel_preview')) {
             await this.bot.answerCallbackQuery(query.id, { text: 'Dibatalkan' });
             await this.bot.deleteMessage(chatId, query.message.message_id);
