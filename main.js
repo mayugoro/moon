@@ -400,7 +400,7 @@ class MonsNodeBot {
         const selectedItem = session.results[index];
         const costDownload = parseInt(process.env.COST_DOWNLOAD) || 1000;
 
-        // Check user balance
+        // Check user balance (don't deduct yet)
         const user = await db.getUser(userId);
         if (!user) {
             await this.bot.answerCallbackQuery(queryId, { text: '❌ User tidak terdaftar' });
@@ -415,22 +415,29 @@ class MonsNodeBot {
             return;
         }
 
-        // Deduct balance
-        const deductResult = await db.deductBalance(userId, costDownload);
-        if (!deductResult.success) {
-            await this.bot.answerCallbackQuery(queryId, { text: '❌ Gagal memotong saldo' });
-            return;
-        }
+        console.log(`⬇️ User ${userId} downloading, saldo akan dipotong setelah berhasil kirim`);
 
-        console.log(`⬇️ User ${userId} downloading, saldo: ${deductResult.newBalance}`);
-
-        await this.bot.answerCallbackQuery(queryId, { text: `⏳ Mengunduh... (${costDownload} dipotong)` });
+        await this.bot.answerCallbackQuery(queryId, { text: `⏳ Mengunduh...` });
 
         const message = { userId: userId, from: { id: userId } };
         const downloadResult = await handleDownload(message, [], selectedItem);
 
         if (downloadResult.success && downloadResult.needSendFile) {
-            await this.sendFile(chatId, selectedItem, downloadResult, deductResult.newBalance);
+            // Send file first
+            const sendSuccess = await this.sendFile(chatId, selectedItem, downloadResult);
+            
+            // Deduct balance ONLY if file was sent successfully
+            if (sendSuccess) {
+                const deductResult = await db.deductBalance(userId, costDownload);
+                if (deductResult.success) {
+                    console.log(`💰 Saldo dipotong ${costDownload} setelah kirim file, sisa: ${deductResult.newBalance}`);
+                    
+                    // Send confirmation message
+                    await this.bot.sendMessage(chatId, 
+                        `✅ File terkirim!\n💰 Saldo dipotong: ${costDownload}\n💵 Sisa saldo: ${deductResult.newBalance}`
+                    );
+                }
+            }
         } else {
             await this.bot.sendMessage(chatId, downloadResult.message || '❌ Download gagal');
         }
@@ -485,24 +492,32 @@ class MonsNodeBot {
         }
     }
 
-    async sendFile(chatId, selectedItem, downloadResult, remainingBalance = null) {
+    async sendFile(chatId, selectedItem, downloadResult) {
         try {
-            let caption = `📹 ${cleanTitle(selectedItem.title)}\n👤 ${selectedItem.username || 'Unknown'}\n📦 ${downloadResult.size}`;
-            
-            if (remainingBalance !== null) {
-                caption += `\n💵 Sisa saldo: ${remainingBalance}`;
-            }
+            const caption = `📹 ${cleanTitle(selectedItem.title)}\n👤 ${selectedItem.username || 'Unknown'}\n📦 ${downloadResult.size}`;
             
             await this.bot.sendVideo(chatId, downloadResult.filepath, { caption });
             
-            console.log(`✅ File sent`);
+            console.log(`✅ File sent successfully`);
             
             const fs = require('fs');
             fs.unlinkSync(downloadResult.filepath);
             console.log(`🗑️  File deleted`);
+            
+            return true; // Success
         } catch (error) {
             console.error('❌ Error sending file:', error);
             await this.bot.sendMessage(chatId, '❌ Gagal mengirim file: ' + error.message);
+            
+            // Delete file even if send failed
+            try {
+                const fs = require('fs');
+                fs.unlinkSync(downloadResult.filepath);
+            } catch (e) {
+                // Ignore delete error
+            }
+            
+            return false; // Failed
         }
     }
 
