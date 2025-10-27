@@ -132,10 +132,16 @@ const createPreviewKeyboard = (itemIndex, videoUrl = null) => {
     // First row: Tonton and Download
     const firstRow = [];
     
+    // Tonton button - URL button if videoUrl available, otherwise callback
     if (videoUrl) {
         firstRow.push({
             text: '📺 TONTON',
             url: videoUrl
+        });
+    } else {
+        firstRow.push({
+            text: '📺 TONTON',
+            callback_data: `watch_${itemIndex}`
         });
     }
     

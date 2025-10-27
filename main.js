@@ -135,18 +135,49 @@ class MonsNodeBot {
                     
                 case 'topup':
                     return await handleTopup(message, args);
+                
+                case 'saldo':
+                case 'balance':
+                    return await this.handleSaldoCommand(message);
                     
                 default:
                     return {
                         success: false,
-                        message: `❌ Perintah tidak dikenal: /${command}\n\n` +
-                                `Gunakan:\n/cari [query] - Cari konten\n/topup [amount] - Top-up saldo`
+                        message: `❌ Perintah tidak dikenal: /${command}\n\nGunakan:\n/cari [query] - Cari konten\n/saldo - Cek saldo\n/topup [amount] - Top-up saldo`
                     };
             }
         } catch (error) {
             console.error(`❌ Error processing command ${command}:`, error);
             return { success: false, message: '❌ Terjadi kesalahan.', error: error.message };
         }
+    }
+
+    async handleSaldoCommand(message) {
+        const userId = message.userId || message.from?.id;
+        const user = await db.getUser(userId);
+        
+        if (!user) {
+            return {
+                success: false,
+                message: '❌ User tidak terdaftar'
+            };
+        }
+
+        const costWatch = parseInt(process.env.COST_WATCH) || 500;
+        const costDownload = parseInt(process.env.COST_DOWNLOAD) || 1000;
+
+        const saldoMessage = `💰 *INFORMASI SALDO*\n\n` +
+            `👤 User: ${user.username}\n` +
+            `💵 Saldo: ${user.saldo}\n` +
+            `💎 Saldo Awal: ${user.saldoAwal}\n` +
+            `📊 Sisa Saldo: ${user.sisaSaldo}\n\n` +
+            `📺 Biaya Tonton: ${costWatch}\n` +
+            `⬇️ Biaya Download: ${costDownload}`;
+
+        return {
+            success: true,
+            message: saldoMessage
+        };
     }
 
     async handleSearchCommand(message, args) {
@@ -198,8 +229,30 @@ class MonsNodeBot {
             }
         }
 
-        // Format preview message
-        const previewMessage = formatPreview(selectedItem, index);
+        // Check and deduct balance for TONTON feature
+        const costWatch = parseInt(process.env.COST_WATCH) || 500;
+        const user = await db.getUser(userId);
+        
+        let previewMessage = formatPreview(selectedItem, index);
+        
+        // Add balance info to preview
+        if (user && videoUrl) {
+            previewMessage += `\n\n💰 Biaya Tonton: ${costWatch}`;
+            previewMessage += `\n💵 Saldo Anda: ${user.saldo}`;
+            
+            if (user.saldo < costWatch) {
+                previewMessage += `\n⚠️ Saldo tidak cukup untuk Tonton`;
+                // Remove videoUrl so button becomes callback
+                videoUrl = null;
+            } else {
+                // Deduct balance for TONTON (will be charged when URL is clicked)
+                await db.deductBalance(userId, costWatch);
+                const newBalance = user.saldo - costWatch;
+                previewMessage += `\n\n✅ Saldo ${costWatch} akan dipotong jika Tonton`;
+                console.log(`💰 Pre-authorized ${costWatch} for watch, user ${userId}`);
+            }
+        }
+
         const previewKeyboard = createPreviewKeyboard(index, videoUrl);
 
         // Store video URL in session for download
@@ -226,6 +279,117 @@ class MonsNodeBot {
         }
     }
 
+    async handleWatch(chatId, userId, index, queryId) {
+        const session = this.userSessions.get(userId);
+        if (!session || index >= session.results.length) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Invalid selection' });
+            return;
+        }
+
+        const selectedItem = session.results[index];
+        const costWatch = parseInt(process.env.COST_WATCH) || 500;
+
+        // Check user balance
+        const user = await db.getUser(userId);
+        if (!user) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ User tidak terdaftar' });
+            return;
+        }
+
+        if (user.saldo < costWatch) {
+            await this.bot.answerCallbackQuery(queryId, { 
+                text: `❌ Saldo tidak cukup! Butuh ${costWatch}, saldo Anda: ${user.saldo}`,
+                show_alert: true 
+            });
+            return;
+        }
+
+        // Get video URL
+        let videoUrl = session.selectedVideoUrl || selectedItem.url;
+        
+        if (!videoUrl) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ URL video tidak ditemukan' });
+            return;
+        }
+
+        // Show popup-style confirmation
+        await this.bot.answerCallbackQuery(queryId);
+
+        const confirmMessage = `Buka tautan ini?\n\n${videoUrl}`;
+
+        await this.bot.sendMessage(chatId, confirmMessage, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: 'Batal',
+                            callback_data: `cancel_watch`
+                        },
+                        {
+                            text: 'Buka',
+                            callback_data: `confirm_watch_${index}`
+                        }
+                    ]
+                ]
+            }
+        });
+
+        // Store video URL in session for later use
+        session.pendingWatch = {
+            index: index,
+            videoUrl: videoUrl,
+            cost: costWatch
+        };
+    }
+
+    async confirmWatch(chatId, userId, index, queryId, messageId) {
+        const session = this.userSessions.get(userId);
+        if (!session || !session.pendingWatch) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Session expired' });
+            return;
+        }
+
+        const { videoUrl, cost } = session.pendingWatch;
+        const selectedItem = session.results[index];
+
+        // Deduct balance NOW when user confirms
+        const deductResult = await db.deductBalance(userId, cost);
+        if (!deductResult.success) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Gagal memotong saldo' });
+            return;
+        }
+
+        console.log(`📺 User ${userId} confirmed watch, saldo dipotong: ${cost}, sisa: ${deductResult.newBalance}`);
+
+        await this.bot.answerCallbackQuery(queryId, { text: `✅ Saldo dipotong ${cost}` });
+
+        // Edit message to show link with URL button
+        const watchMessage = `📺 *STREAMING VIDEO*\n\n` +
+            `📌 ${cleanTitle(selectedItem.title)}\n` +
+            `💰 Saldo dipotong: ${cost}\n` +
+            `💵 Sisa saldo: ${deductResult.newBalance}\n\n` +
+            `� Klik tombol di bawah untuk menonton`;
+
+        await this.bot.editMessageText(watchMessage, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '🎬 BUKA VIDEO',
+                            url: videoUrl
+                        }
+                    ]
+                ]
+            }
+        });
+
+        // Clear pending watch
+        delete session.pendingWatch;
+    }
+
     async handleDownloadConfirm(chatId, userId, index, queryId) {
         const session = this.userSessions.get(userId);
         if (!session || index >= session.results.length) {
@@ -234,15 +398,39 @@ class MonsNodeBot {
         }
 
         const selectedItem = session.results[index];
-        console.log(`✅ User confirmed download item ${index + 1}: ${selectedItem.title}`);
+        const costDownload = parseInt(process.env.COST_DOWNLOAD) || 1000;
 
-        await this.bot.answerCallbackQuery(queryId, { text: '⏳ Mengunduh...' });
+        // Check user balance
+        const user = await db.getUser(userId);
+        if (!user) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ User tidak terdaftar' });
+            return;
+        }
+
+        if (user.saldo < costDownload) {
+            await this.bot.answerCallbackQuery(queryId, { 
+                text: `❌ Saldo tidak cukup! Butuh ${costDownload}, saldo Anda: ${user.saldo}`,
+                show_alert: true 
+            });
+            return;
+        }
+
+        // Deduct balance
+        const deductResult = await db.deductBalance(userId, costDownload);
+        if (!deductResult.success) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Gagal memotong saldo' });
+            return;
+        }
+
+        console.log(`⬇️ User ${userId} downloading, saldo: ${deductResult.newBalance}`);
+
+        await this.bot.answerCallbackQuery(queryId, { text: `⏳ Mengunduh... (${costDownload} dipotong)` });
 
         const message = { userId: userId, from: { id: userId } };
         const downloadResult = await handleDownload(message, [], selectedItem);
 
         if (downloadResult.success && downloadResult.needSendFile) {
-            await this.sendFile(chatId, selectedItem, downloadResult);
+            await this.sendFile(chatId, selectedItem, downloadResult, deductResult.newBalance);
         } else {
             await this.bot.sendMessage(chatId, downloadResult.message || '❌ Download gagal');
         }
@@ -297,9 +485,13 @@ class MonsNodeBot {
         }
     }
 
-    async sendFile(chatId, selectedItem, downloadResult) {
+    async sendFile(chatId, selectedItem, downloadResult, remainingBalance = null) {
         try {
-            const caption = `📹 ${cleanTitle(selectedItem.title)}\n👤 ${selectedItem.username || 'Unknown'}\n📦 ${downloadResult.size}`;
+            let caption = `📹 ${cleanTitle(selectedItem.title)}\n👤 ${selectedItem.username || 'Unknown'}\n📦 ${downloadResult.size}`;
+            
+            if (remainingBalance !== null) {
+                caption += `\n💵 Sisa saldo: ${remainingBalance}`;
+            }
             
             await this.bot.sendVideo(chatId, downloadResult.filepath, { caption });
             
