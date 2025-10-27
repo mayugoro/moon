@@ -35,7 +35,7 @@ const formatSearchList = (results, query, page = 0) => {
         }
     });
 
-    message += `\n💡 Klik nomor untuk download`;
+    message += `\n💡 Klik nomor untuk preview`;
 
     return message;
 };
@@ -100,8 +100,53 @@ const cleanTitle = (title) => {
     return clean;
 };
 
+const formatPreview = (item, index) => {
+    let message = `📹 PREVIEW VIDEO #${index + 1}\n\n`;
+    
+    // Title
+    let title = item.title || 'Video';
+    title = title.split('http')[0].trim();
+    if (title.length > 150) {
+        title = title.substring(0, 150) + '...';
+    }
+    message += `📌 ${title}\n\n`;
+    
+    // Username
+    if (item.username) {
+        message += `👤 ${item.username}\n`;
+    }
+    
+    // Video ID
+    if (item.videoId) {
+        message += `🆔 ID: ${item.videoId}\n`;
+    }
+    
+    message += `\n💡 Klik "Download" untuk mengunduh video`;
+    
+    return message;
+};
+
+const createPreviewKeyboard = (itemIndex) => {
+    return {
+        inline_keyboard: [
+            [
+                {
+                    text: '⬇️ Download',
+                    callback_data: `download_${itemIndex}`
+                },
+                {
+                    text: '❌ Batal',
+                    callback_data: `cancel_preview`
+                }
+            ]
+        ]
+    };
+};
+
 module.exports = {
     formatSearchList,
     createInlineKeyboard,
-    cleanTitle
+    cleanTitle,
+    formatPreview,
+    createPreviewKeyboard
 };

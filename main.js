@@ -4,7 +4,7 @@ const db = require('./db');
 const { handleSearch } = require('./handle/search');
 const { handleTopup } = require('./handle/topup');
 const { handleDownload } = require('./handle/download');
-const { formatSearchList, createInlineKeyboard, cleanTitle } = require('./handle/ui');
+const { formatSearchList, createInlineKeyboard, cleanTitle, formatPreview, createPreviewKeyboard } = require('./handle/ui');
 
 class MonsNodeBot {
     constructor() {
@@ -86,14 +86,20 @@ class MonsNodeBot {
         console.log(`🖱️ Callback from ${query.from.first_name}: ${data}`);
 
         const session = this.userSessions.get(userId);
-        if (!session) {
+        if (!session && !data.startsWith('cancel_')) {
             await this.bot.answerCallbackQuery(query.id, { text: 'Session expired' });
             return;
         }
 
         if (data.startsWith('select_')) {
             const index = parseInt(data.split('_')[1]);
-            await this.handleSelection(chatId, userId, index, query.id);
+            await this.showPreview(chatId, userId, index, query.id, query.message.message_id);
+        } else if (data.startsWith('download_')) {
+            const index = parseInt(data.split('_')[1]);
+            await this.handleDownloadConfirm(chatId, userId, index, query.id);
+        } else if (data.startsWith('cancel_preview')) {
+            await this.bot.answerCallbackQuery(query.id, { text: 'Dibatalkan' });
+            await this.bot.deleteMessage(chatId, query.message.message_id);
         } else if (data.startsWith('page_')) {
             const page = parseInt(data.split('_')[1]);
             await this.showPage(chatId, userId, page, query.message.message_id);
@@ -165,6 +171,64 @@ class MonsNodeBot {
         }
 
         return searchResult;
+    }
+
+    async showPreview(chatId, userId, index, queryId, messageId) {
+        const session = this.userSessions.get(userId);
+        if (!session || index >= session.results.length) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Invalid selection' });
+            return;
+        }
+
+        const selectedItem = session.results[index];
+        console.log(`👁️ Showing preview for item ${index + 1}: ${selectedItem.title}`);
+
+        await this.bot.answerCallbackQuery(queryId, { text: 'Menampilkan preview...' });
+
+        // Format preview message
+        const previewMessage = formatPreview(selectedItem, index);
+        const previewKeyboard = createPreviewKeyboard(index);
+
+        // Send preview with thumbnail if available
+        if (selectedItem.thumbnail) {
+            try {
+                await this.bot.sendPhoto(chatId, selectedItem.thumbnail, {
+                    caption: previewMessage,
+                    reply_markup: previewKeyboard
+                });
+            } catch (error) {
+                console.log('⚠️ Failed to send thumbnail, sending text only');
+                await this.bot.sendMessage(chatId, previewMessage, {
+                    reply_markup: previewKeyboard
+                });
+            }
+        } else {
+            await this.bot.sendMessage(chatId, previewMessage, {
+                reply_markup: previewKeyboard
+            });
+        }
+    }
+
+    async handleDownloadConfirm(chatId, userId, index, queryId) {
+        const session = this.userSessions.get(userId);
+        if (!session || index >= session.results.length) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Invalid selection' });
+            return;
+        }
+
+        const selectedItem = session.results[index];
+        console.log(`✅ User confirmed download item ${index + 1}: ${selectedItem.title}`);
+
+        await this.bot.answerCallbackQuery(queryId, { text: '⏳ Mengunduh...' });
+
+        const message = { userId: userId, from: { id: userId } };
+        const downloadResult = await handleDownload(message, [], selectedItem);
+
+        if (downloadResult.success && downloadResult.needSendFile) {
+            await this.sendFile(chatId, selectedItem, downloadResult);
+        } else {
+            await this.bot.sendMessage(chatId, downloadResult.message || '❌ Download gagal');
+        }
     }
 
     async handleSelection(chatId, userId, index, queryId) {
