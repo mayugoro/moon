@@ -341,13 +341,30 @@ async function getActualVideoUrl(detailUrl) {
         const response = await axios.get(detailUrl);
         const $ = cheerio.load(response.data);
         
-        // Look for video source in the page
-        // Pattern 1: Look for <video> tag source
-        let videoUrl = $('video source').attr('src');
+        // Pattern 1: Look for direct link with video.twimg.com
+        // The URL is in <a> tag text content
+        let videoUrl = null;
         
-        // Pattern 2: Look for direct .mp4 links
+        $('a[href*="video.twimg.com"]').each((i, el) => {
+            const href = $(el).attr('href');
+            const text = $(el).text().trim();
+            
+            // Check if href contains video.twimg.com and .mp4
+            if (href && href.includes('video.twimg.com') && href.includes('.mp4')) {
+                videoUrl = href;
+                return false; // break
+            }
+            
+            // Check if text content contains the URL
+            if (text && text.includes('video.twimg.com') && text.includes('.mp4')) {
+                videoUrl = text;
+                return false; // break
+            }
+        });
+        
+        // Pattern 2: Look for <video> tag source
         if (!videoUrl) {
-            videoUrl = $('a[href$=".mp4"]').attr('href');
+            videoUrl = $('video source').attr('src');
         }
         
         // Pattern 3: Search in script tags for video URL
@@ -357,12 +374,21 @@ async function getActualVideoUrl(detailUrl) {
                 const scriptContent = $(script).html();
                 if (scriptContent) {
                     // Look for video.twimg.com URLs
-                    const match = scriptContent.match(/https:\/\/video\.twimg\.com\/[^"'\s]+\.mp4/);
+                    const match = scriptContent.match(/https:\/\/video\.twimg\.com\/[^"'\s]+\.mp4[^"'\s]*/);
                     if (match) {
                         videoUrl = match[0];
                         break;
                     }
                 }
+            }
+        }
+        
+        // Pattern 4: Search in all page text
+        if (!videoUrl) {
+            const pageHtml = response.data;
+            const match = pageHtml.match(/https:\/\/video\.twimg\.com\/ext_tw_video\/\d+\/pu\/vid\/\d+x\d+\/[^"'\s<>]+\.mp4[^"'\s<>]*/);
+            if (match) {
+                videoUrl = match[0];
             }
         }
         

@@ -3,30 +3,27 @@ const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
 const { handleSearch } = require('./handle/search');
 const { handleTopup } = require('./handle/topup');
+const { handleDownload } = require('./handle/download');
+const { formatSearchList, createInlineKeyboard, cleanTitle } = require('./handle/ui');
 
 class MonsNodeBot {
     constructor() {
         this.port = process.env.PORT || 3000;
-        this.userSessions = new Map(); // Store user search sessions
+        this.userSessions = new Map();
         this.botToken = process.env.BOT_TOKEN;
         
         if (!this.botToken) {
             throw new Error('BOT_TOKEN tidak ditemukan di file .env');
         }
         
-        // Initialize Telegram Bot
         this.bot = new TelegramBot(this.botToken, { polling: true });
     }
 
     async init() {
         try {
             console.log('🚀 Initializing MONSNODE Bot...');
-            
-            // Initialize database
             await db.connect();
             console.log('✅ Database connected');
-
-            // Start bot
             this.start();
         } catch (error) {
             console.error('❌ Error initializing bot:', error);
@@ -42,72 +39,18 @@ class MonsNodeBot {
         console.log('   /topup <amount> - Top-up saldo');
         console.log('\n⏳ Waiting for commands...\n');
         
-        // Setup Telegram Bot handlers
-        this.setupTelegramHandlers();
+        this.setupHandlers();
     }
 
-    setupTelegramHandlers() {
-        // Handle all messages
+    setupHandlers() {
+        // Handle messages
         this.bot.on('message', async (msg) => {
-            const chatId = msg.chat.id;
-            const text = msg.text;
+            await this.handleMessage(msg);
+        });
 
-            console.log(`📨 Message from ${msg.from.first_name} (${msg.from.id}): ${text}`);
-
-            // Convert Telegram message to our format
-            const message = {
-                userId: msg.from.id.toString(),
-                from: {
-                    id: msg.from.id.toString(),
-                    username: msg.from.username || msg.from.first_name,
-                    first_name: msg.from.first_name,
-                    last_name: msg.from.last_name
-                },
-                text: text,
-                chatId: chatId
-            };
-
-            // Process message
-            const result = await this.processMessage(message);
-
-            // Send response
-            if (result) {
-                // If result contains file to send
-                if (result.sendFile && result.downloadResult && result.downloadResult.filepath) {
-                    try {
-                        // Send "downloading" status
-                        if (result.message) {
-                            await this.bot.sendMessage(chatId, result.message);
-                        }
-                        
-                        // Clean title for caption
-                        let cleanTitle = result.selectedItem.title || 'Video';
-                        cleanTitle = cleanTitle.split('http')[0].split('#')[0].trim();
-                        if (cleanTitle.length > 100) {
-                            cleanTitle = cleanTitle.substring(0, 100) + '...';
-                        }
-                        
-                        // Send file
-                        await this.bot.sendVideo(chatId, result.downloadResult.filepath, {
-                            caption: `📹 ${cleanTitle}\n👤 ${result.selectedItem.username || 'Unknown'}\n📦 ${result.downloadResult.size}`
-                        });
-                        
-                        console.log(`✅ File sent to user ${msg.from.id}`);
-                        
-                        // Delete file after sending (optional)
-                        const fs = require('fs');
-                        fs.unlinkSync(result.downloadResult.filepath);
-                        console.log(`🗑️  File deleted: ${result.downloadResult.filepath}`);
-                        
-                    } catch (error) {
-                        console.error('❌ Error sending file:', error);
-                        await this.bot.sendMessage(chatId, '❌ Gagal mengirim file: ' + error.message);
-                    }
-                } else if (result.message) {
-                    // Send text message
-                    await this.bot.sendMessage(chatId, result.message);
-                }
-            }
+        // Handle callback queries (inline keyboard)
+        this.bot.on('callback_query', async (query) => {
+            await this.handleCallbackQuery(query);
         });
 
         // Handle errors
@@ -118,19 +61,53 @@ class MonsNodeBot {
         console.log('✅ Telegram Bot handlers setup complete');
     }
 
+    async handleMessage(msg) {
+        const chatId = msg.chat.id;
+        const text = msg.text;
+
+        console.log(`📨 Message from ${msg.from.first_name} (${msg.from.id}): ${text}`);
+
+        const message = {
+            userId: msg.from.id.toString(),
+            from: msg.from,
+            text: text,
+            chatId: chatId
+        };
+
+        const result = await this.processMessage(message);
+        await this.sendResponse(chatId, result);
+    }
+
+    async handleCallbackQuery(query) {
+        const chatId = query.message.chat.id;
+        const data = query.data;
+        const userId = query.from.id.toString();
+
+        console.log(`🖱️ Callback from ${query.from.first_name}: ${data}`);
+
+        const session = this.userSessions.get(userId);
+        if (!session) {
+            await this.bot.answerCallbackQuery(query.id, { text: 'Session expired' });
+            return;
+        }
+
+        if (data.startsWith('select_')) {
+            const index = parseInt(data.split('_')[1]);
+            await this.handleSelection(chatId, userId, index, query.id);
+        } else if (data.startsWith('page_')) {
+            const page = parseInt(data.split('_')[1]);
+            await this.showPage(chatId, userId, page, query.message.message_id);
+            await this.bot.answerCallbackQuery(query.id);
+        }
+    }
+
     async processMessage(message) {
         const text = message.text || '';
         
-        // Check if message is a command
         if (text.startsWith('/')) {
             return await this.handleCommand(message);
         }
         
-        // Check if user is selecting from search results
-        if (this.userSessions.has(message.userId)) {
-            return await this.handleSelection(message);
-        }
-
         return null;
     }
 
@@ -140,177 +117,120 @@ class MonsNodeBot {
         const command = args.shift().toLowerCase();
 
         try {
+            await this.ensureUserRegistered(message);
+
             switch (command) {
                 case 'cari':
                 case 'search':
                     return await this.handleSearchCommand(message, args);
                     
                 case 'topup':
-                    return await this.handleTopupCommand(message, args);
+                    return await handleTopup(message, args);
                     
                 default:
                     return {
                         success: false,
                         message: `❌ Perintah tidak dikenal: /${command}\n\n` +
-                                `Gunakan:\n` +
-                                `/cari [query] - Cari konten\n` +
-                                `/topup [amount] - Top-up saldo`
+                                `Gunakan:\n/cari [query] - Cari konten\n/topup [amount] - Top-up saldo`
                     };
             }
         } catch (error) {
             console.error(`❌ Error processing command ${command}:`, error);
-            return {
-                success: false,
-                message: '❌ Terjadi kesalahan.',
-                error: error.message
-            };
+            return { success: false, message: '❌ Terjadi kesalahan.', error: error.message };
         }
     }
 
     async handleSearchCommand(message, args) {
         const userId = message.userId || message.from?.id;
-
-        // Ensure user is registered
-        await this.ensureUserRegistered(message);
-
-        // Perform search
         const searchResult = await handleSearch(message, args);
 
         if (searchResult.success && searchResult.results && searchResult.results.length > 0) {
-            // Store search results in session
             this.userSessions.set(userId, {
                 command: 'search',
                 query: searchResult.query,
                 results: searchResult.results,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                page: 0
             });
 
-            // Format list for display
-            const listMessage = this.formatSearchList(searchResult.results, searchResult.query);
+            const listMessage = formatSearchList(searchResult.results, searchResult.query, 0);
+            const keyboard = createInlineKeyboard(searchResult.results, 0);
 
             return {
                 success: true,
                 message: listMessage,
-                results: searchResult.results,
-                showSelection: true
+                keyboard: keyboard,
+                results: searchResult.results
             };
         }
 
         return searchResult;
     }
 
-    async handleTopupCommand(message, args) {
-        // Ensure user is registered
-        await this.ensureUserRegistered(message);
-
-        // Process topup
-        return await handleTopup(message, args);
-    }
-
-    async handleSelection(message) {
-        const userId = message.userId || message.from?.id;
+    async handleSelection(chatId, userId, index, queryId) {
         const session = this.userSessions.get(userId);
-
-        if (!session || session.command !== 'search') {
-            return null;
+        if (!session || index >= session.results.length) {
+            await this.bot.answerCallbackQuery(queryId, { text: '❌ Invalid selection' });
+            return;
         }
 
-        // Parse selection (expecting number)
-        const selection = parseInt(message.text);
+        const selectedItem = session.results[index];
+        console.log(`✅ User selected item ${index + 1}: ${selectedItem.title}`);
 
-        if (isNaN(selection) || selection < 1 || selection > session.results.length) {
-            return {
-                success: false,
-                message: `❌ Pilihan tidak valid. Pilih nomor 1-${session.results.length}`
-            };
-        }
+        await this.bot.answerCallbackQuery(queryId, { text: '⏳ Mengunduh...' });
 
-        // Get selected item
-        const selectedItem = session.results[selection - 1];
-
-        console.log(`✅ User selected item ${selection}: ${selectedItem.title}`);
-
-        // Download the selected item
-        const { handleDownload } = require('./handle/download');
+        const message = { userId: userId, from: { id: userId } };
         const downloadResult = await handleDownload(message, [], selectedItem);
 
         if (downloadResult.success && downloadResult.needSendFile) {
-            // Return result with file to send
-            // Clean title for display
-            let cleanTitle = selectedItem.title || 'Video';
-            cleanTitle = cleanTitle.split('http')[0].split('#')[0].trim();
-            if (cleanTitle.length > 50) {
-                cleanTitle = cleanTitle.substring(0, 50) + '...';
-            }
-            
-            return {
-                success: true,
-                message: `⏳ Mengunduh: ${cleanTitle}`,
-                selectedItem: selectedItem,
-                downloadResult: downloadResult,
-                sendFile: true
-            };
+            await this.sendFile(chatId, selectedItem, downloadResult);
+        } else {
+            await this.bot.sendMessage(chatId, downloadResult.message || '❌ Download gagal');
         }
-
-        return downloadResult;
     }
 
-    formatSearchList(results, query) {
-        let message = `🔍 Hasil: "${query}"\n`;
-        message += `📊 ${results.length} video ditemukan\n\n`;
+    async showPage(chatId, userId, page, messageId) {
+        const session = this.userSessions.get(userId);
+        if (!session) return;
 
-        results.forEach((item, index) => {
-            // Clean title - remove hashtags and URLs
-            let cleanTitle = item.title || 'Video';
-            cleanTitle = cleanTitle.split('http')[0]; // Remove URLs
-            cleanTitle = cleanTitle.split('#')[0]; // Remove hashtags
-            cleanTitle = cleanTitle.trim();
-            
-            // Limit title length
-            if (cleanTitle.length > 60) {
-                cleanTitle = cleanTitle.substring(0, 60) + '...';
-            }
-            
-            message += `${index + 1}. ${cleanTitle}\n`;
-            
-            // Show username if available
-            if (item.username) {
-                message += `   👤 ${item.username}\n`;
-            }
+        session.page = page;
+        const listMessage = formatSearchList(session.results, session.query, page);
+        const keyboard = createInlineKeyboard(session.results, page);
+
+        await this.bot.editMessageText(listMessage, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: keyboard
         });
-
-        message += `\n💡 Ketik nomor untuk download`;
-
-        return message;
     }
 
-    formatPreview(item) {
-        let preview = `📄 PREVIEW\n\n`;
-        preview += `📌 Judul: ${item.title || 'No Title'}\n\n`;
-        
-        if (item.description) {
-            preview += `📝 Deskripsi:\n${item.description}\n\n`;
-        }
-        
-        if (item.url) {
-            preview += `🔗 URL: ${item.url}\n`;
-        }
-        
-        if (item.category) {
-            preview += `📁 Kategori: ${item.category}\n`;
-        }
-        
-        if (item.size) {
-            preview += `📦 Size: ${item.size}\n`;
-        }
-        
-        if (item.type) {
-            preview += `📋 Type: ${item.type}\n`;
-        }
+    async sendResponse(chatId, result) {
+        if (!result) return;
 
-        preview += `\n💡 Ketik nomor lain untuk melihat item lain`;
+        if (result.keyboard) {
+            await this.bot.sendMessage(chatId, result.message, {
+                reply_markup: result.keyboard
+            });
+        } else if (result.message) {
+            await this.bot.sendMessage(chatId, result.message);
+        }
+    }
 
-        return preview;
+    async sendFile(chatId, selectedItem, downloadResult) {
+        try {
+            const caption = `📹 ${cleanTitle(selectedItem.title)}\n👤 ${selectedItem.username || 'Unknown'}\n📦 ${downloadResult.size}`;
+            
+            await this.bot.sendVideo(chatId, downloadResult.filepath, { caption });
+            
+            console.log(`✅ File sent`);
+            
+            const fs = require('fs');
+            fs.unlinkSync(downloadResult.filepath);
+            console.log(`🗑️  File deleted`);
+        } catch (error) {
+            console.error('❌ Error sending file:', error);
+            await this.bot.sendMessage(chatId, '❌ Gagal mengirim file: ' + error.message);
+        }
     }
 
     async ensureUserRegistered(message) {
@@ -318,7 +238,6 @@ class MonsNodeBot {
         const username = message.from?.username || message.from?.first_name || 'User';
         const lastName = message.from?.last_name || '';
         
-        // Check if user exists
         let user = await db.getUser(userId);
         
         if (!user) {
@@ -330,14 +249,6 @@ class MonsNodeBot {
         
         return user;
     }
-
-    clearUserSession(userId) {
-        this.userSessions.delete(userId);
-    }
-
-    getUserSession(userId) {
-        return this.userSessions.get(userId);
-    }
 }
 
 // Start bot
@@ -345,3 +256,4 @@ const bot = new MonsNodeBot();
 bot.init();
 
 module.exports = bot;
+

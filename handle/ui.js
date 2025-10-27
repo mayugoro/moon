@@ -1,0 +1,107 @@
+// Telegram UI Handler
+const ITEMS_PER_PAGE = 5;
+
+const formatSearchList = (results, query, page = 0) => {
+    const totalPages = Math.ceil(results.length / ITEMS_PER_PAGE);
+    const startIdx = page * ITEMS_PER_PAGE;
+    const endIdx = Math.min(startIdx + ITEMS_PER_PAGE, results.length);
+    const pageItems = results.slice(startIdx, endIdx);
+
+    let message = `🔍 "${query}"\n`;
+    message += `📊 ${results.length} video | Hal ${page + 1}/${totalPages}\n\n`;
+
+    pageItems.forEach((item, idx) => {
+        const globalIndex = startIdx + idx;
+        
+        // Clean title - remove hashtags and URLs
+        let cleanTitle = item.title || 'Video';
+        cleanTitle = cleanTitle.split('http')[0]; // Remove URLs
+        cleanTitle = cleanTitle.split('#')[0]; // Remove hashtags
+        cleanTitle = cleanTitle.trim();
+        
+        // Limit title length to keep message short
+        if (cleanTitle.length > 45) {
+            cleanTitle = cleanTitle.substring(0, 45) + '...';
+        }
+        
+        message += `${globalIndex + 1}. ${cleanTitle}\n`;
+        
+        // Show username if available (keep it short)
+        if (item.username) {
+            const username = item.username.length > 15 
+                ? item.username.substring(0, 15) + '...' 
+                : item.username;
+            message += `   👤 ${username}\n`;
+        }
+    });
+
+    message += `\n💡 Klik nomor untuk download`;
+
+    return message;
+};
+
+const createInlineKeyboard = (results, page = 0) => {
+    const buttons = [];
+    const totalPages = Math.ceil(results.length / ITEMS_PER_PAGE);
+    const startIdx = page * ITEMS_PER_PAGE;
+    const endIdx = Math.min(startIdx + ITEMS_PER_PAGE, results.length);
+    
+    // Create number buttons for items on current page (max 5)
+    const numberRow = [];
+    for (let i = startIdx; i < endIdx; i++) {
+        numberRow.push({
+            text: `${i + 1}`,
+            callback_data: `select_${i}`
+        });
+    }
+    
+    // All 5 buttons in ONE row
+    if (numberRow.length > 0) {
+        buttons.push(numberRow);
+    }
+    
+    // Add navigation buttons
+    const navRow = [];
+    if (page > 0) {
+        navRow.push({
+            text: '◀️ Prev',
+            callback_data: `page_${page - 1}`
+        });
+    }
+    
+    // Page indicator
+    navRow.push({
+        text: `${page + 1}/${totalPages}`,
+        callback_data: `info`
+    });
+    
+    if (page < totalPages - 1) {
+        navRow.push({
+            text: 'Next ▶️',
+            callback_data: `page_${page + 1}`
+        });
+    }
+    
+    if (navRow.length > 0) {
+        buttons.push(navRow);
+    }
+    
+    return {
+        inline_keyboard: buttons
+    };
+};
+
+const cleanTitle = (title) => {
+    let clean = title || 'Video';
+    clean = clean.split('http')[0].split('#')[0].trim();
+    if (clean.length > 100) {
+        clean = clean.substring(0, 100) + '...';
+    }
+    return clean;
+};
+
+module.exports = {
+    formatSearchList,
+    createInlineKeyboard,
+    cleanTitle
+};
